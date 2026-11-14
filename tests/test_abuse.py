@@ -117,6 +117,37 @@ print(" ".join(out))
 got_xff = subprocess.run([sys.executable, "-c", probe_xff], cwd=sys.argv[2], capture_output=True, text=True).stdout.split()
 check("the rightmost forwarded hop is believed, a forged leftmost one is not", got_xff,
       ["198.51.100.7", "198.51.100.7", "1.2.3.4", "203.0.113.9", "10.0.0.2"])
+
+probe_uvi = """
+import asyncio, os
+from unittest import mock
+os.environ["PEAKCUT_CLIENT_IP_HEADER"] = "CF-Connecting-IP"; os.environ["PEAKCUT_TRUST_PROXY"] = "1"
+from fastapi import Request
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+from studio import server
+captured = {}
+with mock.patch.object(server.uvicorn, "run", side_effect=lambda *a, **k: captured.update(k)):
+    server.main()
+seen = []
+async def inner(scope, receive, send):
+    seen.append(server._ip(Request(scope)))
+mw = ProxyHeadersMiddleware(inner, trusted_hosts=captured["forwarded_allow_ips"]) if captured.get("proxy_headers") else inner
+async def go():
+    for peer, hdrs in [
+        ("10.0.0.2", [(b"x-forwarded-for", b"172.67.1.1, 198.51.100.7"), (b"cf-connecting-ip", b"1.2.3.4")]),
+        ("203.0.113.9", [(b"x-forwarded-for", b"172.67.1.1"), (b"cf-connecting-ip", b"1.2.3.4")]),
+    ]:
+        await mw({"type": "http", "client": (peer, 1234), "headers": hdrs, "scheme": "http"}, None, None)
+asyncio.run(go())
+os.environ["PEAKCUT_TRUST_PROXY"] = "0"
+with mock.patch.object(server.uvicorn, "run", side_effect=lambda *a, **k: captured.update(k)):
+    server.main()
+seen.append(str(captured.get("proxy_headers")))
+print(" ".join(seen))
+"""
+got_uvi = subprocess.run([sys.executable, "-c", probe_uvi], cwd=sys.argv[2], capture_output=True, text=True).stdout.split()[-3:]
+check("uvicorn proxy_headers does not rewrite the client to a forged leftmost hop", got_uvi,
+      ["198.51.100.7", "203.0.113.9", "False"])
 check("redirects are never cached", fresh.get("/app", follow_redirects=False).headers.get("cache-control"), "private, no-store")
 check("a missing file is never cached", fresh.get("/brand/nope.png").headers.get("cache-control"), "private, no-store")
 

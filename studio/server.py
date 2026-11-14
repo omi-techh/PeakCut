@@ -235,9 +235,13 @@ def _from_cdn(addr: str) -> bool:
 
 
 # Private and local addresses: the only places a reverse proxy in front of PeakCut can sit.
-_PROXY_RANGES = [ipaddress.ip_network(r) for r in (
-    "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
-    "::1/128", "fc00::/7", "fe80::/10")]
+_PROXY_CIDRS = ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+                "::1/128", "fc00::/7", "fe80::/10")
+_PROXY_RANGES = [ipaddress.ip_network(r) for r in _PROXY_CIDRS]
+
+
+def _trust_proxy() -> bool:
+    return (config.env("PEAKCUT_TRUST_PROXY") or "").strip().lower() not in ("", "0", "false", "no")
 
 
 def _valid_ip(text: str) -> str:
@@ -267,10 +271,9 @@ def _ip(request: Request) -> str:
     direct = request.client.host if request.client else ""
     peer = direct
     fwd = ",".join(request.headers.getlist("x-forwarded-for"))
-    trust = (config.env("PEAKCUT_TRUST_PROXY") or "").strip().lower() not in ("", "0", "false", "no")
     # The proxy adds the real peer at the end of X-Forwarded-For, so only the rightmost hop counts. Only a
     # proxy on a private address is believed; a public connection sends its own forwarded header.
-    if trust and fwd and _from_proxy(direct):
+    if _trust_proxy() and fwd and _from_proxy(direct):
         peer = _valid_ip(fwd.rsplit(",", 1)[-1].strip()) or direct
     named = config.env("PEAKCUT_CLIENT_IP_HEADER")
     if named and request.headers.get(named) and _from_cdn(peer):
@@ -1462,10 +1465,10 @@ def main():
         # restart by itself whenever the server code changes (pages in web/ never need a restart)
         uvicorn.run("studio.server:app", host=config.HOST, port=config.PORT, log_level="warning", backlog=4096, reload=True,
                     reload_dirs=[str(config.ROOT / "studio")], reload_includes=["*.py"],
-                    proxy_headers=bool(config.env("PEAKCUT_TRUST_PROXY")), forwarded_allow_ips="*")
+                    proxy_headers=_trust_proxy(), forwarded_allow_ips=list(_PROXY_CIDRS))
         return
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="warning", backlog=4096,
-                proxy_headers=bool(config.env("PEAKCUT_TRUST_PROXY")), forwarded_allow_ips="*")
+                proxy_headers=_trust_proxy(), forwarded_allow_ips=list(_PROXY_CIDRS))
 
 
 if __name__ == "__main__":
