@@ -368,26 +368,32 @@ img.av{object-fit:cover}
 .nstep input,.nstep input:focus{flex:1;min-width:0;height:30px;padding:0;border:0;background:transparent;text-align:center;font-size:20px;font-weight:700;color:var(--brand-ink);-moz-appearance:textfield}
 .nstep input::-webkit-inner-spin-button,.nstep input::-webkit-outer-spin-button,.range input::-webkit-inner-spin-button,.range input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 .nstep .ctl i{font-style:normal;font-size:12px;color:var(--faint);width:10px}
-.tiles3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.tile-o{display:flex;flex-direction:column;gap:7px;padding:6px 6px 8px;border:0;border-radius:10px;background:#fff;color:var(--dim);font-size:12px;font-weight:600;cursor:pointer;text-align:center;transition:background-color .15s ease,color .15s ease}
-.composer.compact .tile-o{background:var(--muted)}
-.tile-o:hover,.tile-o:focus-visible{background:#EDE3DB;color:var(--text)}
-.tile-o[aria-pressed=true]{background:var(--brand-soft);color:var(--brand-ink)}
-.cap-prev{height:54px;border-radius:7px;background:#1E1612;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden;font-size:14px;line-height:1;color:#fff;letter-spacing:0;-webkit-text-stroke:1px #000;paint-order:stroke fill}
+.tiles3{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:9px}
+.tile-o{position:relative;display:flex;flex-direction:column;gap:7px;padding:7px 7px 9px;border:2px solid var(--line);border-radius:12px;background:#fff;color:var(--dim);font-size:12px;font-weight:600;cursor:pointer;text-align:center;transition:all .18s cubic-bezier(.2,.8,.2,1)}
+.composer.compact .tile-o{background:var(--muted);border-color:transparent}
+.tile-o:hover{border-color:var(--brand);transform:translateY(-2px);box-shadow:0 6px 14px rgba(0,0,0,.06)}
+.tile-o[aria-pressed=true]{background:#1E1612!important;color:#FFFFFF!important;border:2px solid var(--brand)!important;box-shadow:0 6px 20px rgba(255,139,51,.32),0 0 0 1px var(--brand);transform:translateY(-2px)}
+.tile-o[aria-pressed=true]::after{content:"✓";position:absolute;top:5px;right:5px;width:17px;height:17px;border-radius:50%;background:var(--brand);color:#1E1612;font-size:10px;font-weight:900;display:grid;place-items:center;box-shadow:0 2px 4px rgba(0,0,0,.3);z-index:3}
+.cap-prev{height:54px;border-radius:8px;background:#140E0B;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden;font-size:13px;line-height:1;color:#fff;letter-spacing:0;-webkit-text-stroke:1px #000;paint-order:stroke fill;border:1px solid rgba(255,255,255,.08)}
 .cap-prev b{font-weight:inherit}
-.lay-prev{height:54px;border-radius:7px;background:#1E1612;display:grid;place-items:center}
-.lay-prev .ph{position:relative;width:28px;height:48px;border-radius:4px;overflow:hidden;background:#4A3428}
+.lay-prev{height:54px;border-radius:8px;background:#140E0B;display:grid;place-items:center;border:1px solid rgba(255,255,255,.08)}
+.lay-prev .ph{position:relative;width:28px;height:48px;border-radius:4px;overflow:hidden;background:#3D281E}
 .lay-prev .ph::before{content:"";position:absolute;inset:0;background:linear-gradient(160deg,#B4643A,#5E3A2A);filter:blur(3px);opacity:.75}
 .lay-prev .ph i{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);height:16px;background:linear-gradient(135deg,#FF8B33,#FFB27A)}
 .lay-prev.zoom .ph i{left:-6px;right:-6px;height:24px}
 .lay-prev.crop .ph i{left:0;right:0;top:0;height:100%;transform:none}
+.lay-prev.facetrack .ph i{left:0;right:0;top:0;height:100%;transform:none}
+.lay-prev.facetrack .ph::after{content:"👤";position:absolute;inset:0;display:grid;place-items:center;font-size:13px;z-index:2;filter:drop-shadow(0 2px 4px rgba(0,0,0,.7))}
+.lay-prev.fit .ph i{left:0;right:0;top:16px;height:16px;background:linear-gradient(135deg,#FF8B33,#FFB27A)}
+.lay-prev.fit .ph::before{display:none}
+.lay-prev.fit .ph{background:#000}
 .seg{display:flex;gap:4px;background:#fff;border-radius:10px;padding:4px}
 .composer.compact .seg{background:var(--muted)}
 .seg button{flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;padding:7px 6px;border:0;border-radius:7px;background:transparent;color:var(--dim);font-size:13px;font-weight:600;cursor:pointer;transition:background-color .15s ease,color .15s ease}
 .seg button small{font-size:11px;font-weight:500;color:var(--faint);transition:color .15s ease}
 .seg button:hover,.seg button:focus-visible{background:#EDE3DB;color:var(--text)}
-.seg button[aria-pressed=true]{background:var(--brand-soft);color:var(--brand-ink)}
-.seg button[aria-pressed=true] small{color:#B8693A}
+.seg button[aria-pressed=true]{background:#1E1612!important;color:#FFFFFF!important;box-shadow:0 3px 10px rgba(0,0,0,.15)}
+.seg button[aria-pressed=true] small{color:var(--brand)}
 .range{display:flex;align-items:center;gap:8px}
 .range label{flex:1;display:flex;align-items:center;gap:6px;background:#fff;border-radius:10px;padding:0 10px;height:44px;font-size:12px;color:var(--faint);min-width:0}
 .composer.compact .range label{background:var(--muted)}
@@ -1339,8 +1345,22 @@ function drawAdd(variant) {
     </div></div></form>`;
   drawAtt();
 }
-const LAYOUT_SHORT = {blur:"Blurred fill", zoom:"Zoomed in", crop:"Fill screen"};
-const CAP_LOOK = {bounce:{font:"'Archivo Black'", hl:"#FFFF00", up:true}, hype:{font:"Anton", hl:"#FF3C3C", up:true}, clean:{font:"Poppins", hl:"#6BD7FF", up:false, w:800}};
+const LAYOUT_SHORT = {
+  blur: "Blurred fill",
+  facetrack: "Smart Face Track",
+  crop: "Fill screen",
+  zoom: "Zoomed in",
+  fit: "Black letterbox"
+};
+const CAP_LOOK = {
+  bounce: {font:"'Archivo Black'", hl:"#FFFF00", up:true},
+  hormozi: {font:"Poppins", hl:"#FFE500", up:true, w:800},
+  beast: {font:"Anton", hl:"#FF0033", up:true},
+  hype: {font:"Anton", hl:"#FF3C3C", up:true},
+  neon: {font:"Poppins", hl:"#00F5FF", up:true, w:800},
+  karaoke: {font:"Poppins", hl:"#00FF66", up:false, w:800},
+  clean: {font:"Poppins", hl:"#6BD7FF", up:false, w:800}
+};
 function capPrev(k) {
   const s = CAP_LOOK[k] || {font:"inherit", hl:"#FF8B33", up:true};
   const t = s.up ? ["CLIP", "THIS"] : ["Clip", "this"];

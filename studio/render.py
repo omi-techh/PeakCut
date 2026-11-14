@@ -14,8 +14,16 @@ W, H = config.OUT_W, config.OUT_H
 STYLES = {
     "bounce": {"label": "Bounce", "font": "Poppins ExtraBold", "size": 132, "base": "FFFFFF", "active": "00F0FF",
                "strong": "FFFFFF", "outline": 7, "pop": 112, "upper": True, "per": 3},
+    "hormozi": {"label": "Hormozi", "font": "Poppins ExtraBold", "size": 136, "base": "FFFFFF", "active": "00FFFF",
+                "strong": "FFFFFF", "outline": 7, "pop": 114, "upper": True, "per": 2},
+    "beast": {"label": "Beast Red", "font": "Anton", "size": 150, "base": "FFFFFF", "active": "0000FF",
+              "strong": "00D7FF", "outline": 7, "pop": 115, "upper": True, "per": 2},
     "hype": {"label": "Hype", "font": "Anton", "size": 152, "base": "FFFFFF", "active": "3C3CFF",
              "strong": "00D7FF", "outline": 7, "pop": 114, "upper": True, "per": 2},
+    "neon": {"label": "Neon Cyber", "font": "Poppins ExtraBold", "size": 130, "base": "E0E0E0", "active": "FFFF00",
+             "strong": "FFFFFF", "outline": 6, "pop": 112, "upper": True, "per": 3},
+    "karaoke": {"label": "Karaoke", "font": "Poppins ExtraBold", "size": 128, "base": "FFFFFF", "active": "00FF00",
+                "strong": "FFFFFF", "outline": 6, "pop": 112, "upper": False, "per": 3},
     "clean": {"label": "Clean", "font": "Poppins ExtraBold", "size": 100, "base": "FFFFFF", "active": "6BD7FF",
               "strong": "FFFFFF", "outline": 5, "pop": 106, "upper": False, "per": 4},
 }
@@ -78,7 +86,13 @@ def install_fonts():
             shutil.copyfile(f, config.FONTS_DIR / f.name)
 
 
-LAYOUTS = {"blur": "Full frame + blurred fill", "zoom": "Zoomed in + blurred fill", "crop": "Fill the screen (centre crop)"}
+LAYOUTS = {
+    "blur": "Full frame + blurred fill",
+    "facetrack": "Smart Face Track (Scene-Aware)",
+    "crop": "Fill the screen (centre crop)",
+    "zoom": "Zoomed in + blurred fill",
+    "fit": "Fit full frame (black letterbox)"
+}
 
 
 def _ts(t):
@@ -110,16 +124,16 @@ def _groups(words, per):
 
 def geometry(src_w, src_h, layout):
     """Where the video sits in the 1080x1920 frame, and where hook and captions go."""
-    if src_h >= src_w and layout != "crop":
+    if src_h >= src_w and layout not in ("crop", "facetrack"):
         layout = "crop"  # already vertical or square: nothing to gain from a blurred fill
-    if layout == "blur":
+    if layout in ("blur", "fit"):
         fg_h = min(H, int(round(W * src_h / src_w / 2)) * 2)
     elif layout == "zoom":
         fg_h = 1000
     else:
         fg_h = H
     top = (H - fg_h) // 2
-    if layout == "crop":
+    if layout in ("crop", "facetrack"):
         return layout, fg_h, 300, 1380
     return layout, fg_h, max(230, top - 190), min(1640, top + fg_h + 180)
 
@@ -218,9 +232,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return head + "\n".join(ev) + "\n"
 
 
-def _filter(layout, fg_h):
-    if layout == "crop":
+def _filter(layout, fg_h, crop_x_expr=""):
+    if layout in ("crop", "facetrack"):
+        if crop_x_expr:
+            return f"[0:v]fps={config.OUT_FPS},scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}:x='{crop_x_expr}':y=0,setsar=1[v0];"
         return f"[0:v]fps={config.OUT_FPS},scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1[v0];"
+    if layout == "fit":
+        return f"[0:v]fps={config.OUT_FPS},scale={W}:{fg_h}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[v0];"
     return (f"[0:v]fps={config.OUT_FPS},split=2[a][b];"
             f"[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=6:2,"
             f"scale={W}:{H},eq=brightness=-0.14:saturation=1.15[bg];"
@@ -238,24 +256,34 @@ def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, sr
     layout, fg_h, hook_y, cap_y = geometry(src_w, src_h, clip.get("layout", "blur"))
     ass = build_ass(words, start, end, clip.get("hook", ""), clip.get("style", "bounce"),
                     clip.get("highlight_words", []), hook_y, cap_y)
+
+    # Scene-Aware Face Tracking: dynamically centers on active speakers and snaps on scene cuts
+    crop_x_expr = ""
+    if layout in ("crop", "facetrack"):
+        try:
+            from . import face_tracker
+            crop_x_expr = face_tracker.analyze_scene_and_faces(src, start, end, src_w, src_h, W, H)
+        except Exception as e:
+            print(f"[Render] Scene face tracking notice: {e}")
+
     # The clip is made in a short work folder and moved into place afterwards. The caption step of ffmpeg cannot
     # open files whose full path is longer than 260 characters on Windows, which a data folder deep inside other
     # folders easily reaches. Inside the work folder every name is short and relative (a drive colon would also
     # break the filter syntax).
     work = Path(tempfile.mkdtemp(prefix="pk"))
     try:
-        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass)
+        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass, crop_x_expr)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str) -> dict:
+def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str, crop_x_expr: str = "") -> dict:
     global _qsv_ok
     (work / f"{name}.ass").write_text(ass, encoding="utf-8")
     (work / "f").mkdir()
     for f in config.FONTS_DIR.glob("*.ttf"):
         shutil.copyfile(f, work / "f" / f.name)
-    fc = _filter(layout, fg_h) + f"[v0]ass={name}.ass:fontsdir=f[v]"
+    fc = _filter(layout, fg_h, crop_x_expr) + f"[v0]ass={name}.ass:fontsdir=f[v]"
     base = ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(src),
             "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-pix_fmt"]
