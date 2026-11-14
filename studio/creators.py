@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import config, ctx
+from . import config, ctx, safe
 
 
 def _root() -> Path:
@@ -120,9 +120,7 @@ def _write(c):
         d = root(c["id"])
         for sub in ("videos", "live"):
             (d / sub).mkdir(parents=True, exist_ok=True)
-        tmp = d / "creator.json.tmp"
-        tmp.write_text(json.dumps(c, indent=1), encoding="utf-8")
-        tmp.replace(d / "creator.json")
+        safe.atomic_write(d / "creator.json", json.dumps(c, indent=1))
         _mine()[c["id"]] = copy.deepcopy(c)
     ctx.bump()
 

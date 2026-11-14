@@ -22,6 +22,18 @@ def _load_dotenv():
 _load_dotenv()
 env = os.environ.get
 
+# Auto-discover WinGet FFmpeg installation paths on Windows
+_extra_paths = [
+    Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Links",
+    Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages" / "Gyan.FFmpeg.Essentials_Microsoft.Winget.Source_8wekyb3d8bbwe" / "ffmpeg-9.0.1-essentials_build" / "bin",
+]
+for _ep in _extra_paths:
+    if _ep.exists():
+        _ep_str = str(_ep.resolve())
+        if _ep_str not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{_ep_str}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
 
 _kept: dict = {}
 
