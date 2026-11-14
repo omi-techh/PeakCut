@@ -100,7 +100,8 @@ def _ydl(opts):
     # a channel or playlist link is answered as "a list" straight away, never walked video by video
     return yt_dlp.YoutubeDL({"noplaylist": True, "quiet": True, "no_warnings": True, "logger": _Quiet(),
                              "extract_flat": "in_playlist", "playlistend": 1, "socket_timeout": 20,
-                             "concurrent_fragment_downloads": 4, **opts})
+                             "concurrent_fragment_downloads": 4, "windowsfilenames": True,
+                             "overwrites": True, "file_access_retries": 5, **opts})
 
 
 def _video_format(height):
@@ -224,10 +225,18 @@ def save_thumb(job_dir: Path, url: str = "", video: Path = None) -> bool:
 
 def download_audio(url: str, job_dir: Path, on_progress=None) -> Path:
     """Audio only: a few seconds even for long videos, and all the AI needs to pick clips."""
+    last_p = [0.0]
+    last_t = [0.0]
+
     def hook(d):
         total = d.get("total_bytes") or d.get("total_bytes_estimate")
         if on_progress and d.get("status") == "downloading" and total:
-            on_progress(d.get("downloaded_bytes", 0) / total)
+            p = d.get("downloaded_bytes", 0) / total
+            now = time.time()
+            if p - last_p[0] >= 0.02 or now - last_t[0] >= 0.25 or p >= 0.99:
+                last_p[0] = p
+                last_t[0] = now
+                on_progress(p)
 
     with _youtube_guard(url), _ydl({"format": "ba[ext=m4a]/ba/worst", "outtmpl": str(job_dir / "audio_src.%(ext)s"),
                "progress_hooks": [hook]}) as ydl:

@@ -173,9 +173,7 @@ def save(job):
                 time.sleep(0.05)
         else:
             return
-        tmp = d / "job.json.tmp"
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(d / "job.json")
+        safe.atomic_write(d / "job.json", text)
 
 
 def _set(job, **kw):

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import json
 
-from . import accounts, alerts, config, creators, ctx, jobs, live
+from . import accounts, alerts, config, creators, ctx, jobs, live, safe
 
 _lock = threading.RLock()
 _FILE = config.DATA_DIR / "posts.json"
@@ -24,9 +24,7 @@ OPEN = ("scheduled", "posting")
 
 def _save():
     with _lock:
-        tmp = _FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(_posts, indent=1), encoding="utf-8")
-        tmp.replace(_FILE)
+        safe.atomic_write(_FILE, json.dumps(_posts, indent=1))
 
 
 def _day(t):
