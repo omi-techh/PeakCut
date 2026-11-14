@@ -1,21 +1,57 @@
-"""Scene-Aware Smart Face Tracking for PeakCut.
-Detects camera scene cuts and tracks active speakers to dynamically center 9:16 vertical crop.
+"""Cinematic Scene-Aware Deep Learning Face Tracking for PeakCut.
+Uses OpenCV YuNet Deep Neural Network for full 360-degree pose face detection.
+Features:
+- Instant camera snap on scene cuts (zero-drag transitions).
+- Gimbal deadzone to eliminate micro-jitter.
+- Smooth cinematic exponential gliding within shots.
+- Persistent anchor (never drifts to center when speaker turns sideways).
 """
 import os
 import cv2
 import numpy as np
 from pathlib import Path
 
+MODEL_DIR = Path(__file__).resolve().parent / "models"
+YUNET_PATH = MODEL_DIR / "face_detection_yunet_2023mar.onnx"
+YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+
 CASCADE_FILE = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
-_classifier = None
+_yunet_detector = None
+_cascade_detector = None
 
 
-def get_face_detector():
-    global _classifier
-    if _classifier is None:
-        if os.path.exists(CASCADE_FILE):
-            _classifier = cv2.CascadeClassifier(CASCADE_FILE)
-    return _classifier
+def ensure_yunet_model():
+    """Download YuNet ONNX model (~232 KB) if not already present."""
+    if not YUNET_PATH.exists() or YUNET_PATH.stat().st_size < 100000:
+        try:
+            MODEL_DIR.mkdir(parents=True, exist_ok=True)
+            import urllib.request
+            urllib.request.urlretrieve(YUNET_URL, YUNET_PATH)
+        except Exception as e:
+            print(f"[FaceTracker] YuNet download notice: {e}")
+
+
+def get_detector(width: int = 320, height: int = 320):
+    """Load YuNet Deep Learning face detector with fallback to Haar Cascade."""
+    global _yunet_detector, _cascade_detector
+    ensure_yunet_model()
+
+    if YUNET_PATH.exists() and hasattr(cv2, "FaceDetectorYN"):
+        try:
+            if _yunet_detector is None:
+                _yunet_detector = cv2.FaceDetectorYN.create(
+                    str(YUNET_PATH), "", (width, height), 0.45, 0.3, 5000
+                )
+            else:
+                _yunet_detector.setInputSize((width, height))
+            return ("yunet", _yunet_detector)
+        except Exception:
+            pass
+
+    # Fallback to Haar Cascade
+    if _cascade_detector is None and os.path.exists(CASCADE_FILE):
+        _cascade_detector = cv2.CascadeClassifier(CASCADE_FILE)
+    return ("cascade", _cascade_detector)
 
 
 def analyze_scene_and_faces(
@@ -29,10 +65,8 @@ def analyze_scene_and_faces(
 ) -> str:
     """
     Analyzes video segment between start_sec and end_sec.
-    Detects scene cuts and speaker faces.
-    Returns an FFmpeg crop expression for 'x' parameter mapped to scaled video coordinates:
-      - scale=1080:1920:force_original_aspect_ratio=increase
-      - crop=1080:1920:x='<returned_expr>':y=0
+    Detects scene cuts and speaker faces using deep learning.
+    Returns a smooth, cinematic FFmpeg crop expression for 'x' parameter.
     """
     try:
         cap = cv2.VideoCapture(str(video_path))
@@ -41,8 +75,7 @@ def analyze_scene_and_faces(
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
-        # Video is scaled so height becomes out_h (1920)
-        # width becomes scaled_w (e.g. 3413 for 16:9)
+        # Scale factor so output height is 1920
         scale_ratio = out_h / float(src_h) if src_h > 0 else 1.0
         scaled_w = int(round(src_w * scale_ratio))
         max_crop_x = max(0, scaled_w - out_w)
@@ -51,17 +84,25 @@ def analyze_scene_and_faces(
         # Fast forward to start_sec
         cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, start_sec) * 1000.0)
 
-        # Sample at ~4 frames per second
-        sample_interval_sec = 0.25
+        # Sample at ~6 frames per second for smooth trajectory tracking
+        sample_interval_sec = 0.16
         sample_interval_frames = max(1, int(fps * sample_interval_sec))
 
-        classifier = get_face_detector()
-        prev_gray_thumb = None
-        duration = max(0.1, end_sec - start_sec)
+        # Analysis resolution: 480p for high-speed & high-accuracy face detection
+        det_h = 360
+        det_w = int(round(src_w * (det_h / float(src_h)))) if src_h > 0 else 640
+        det_type, detector = get_detector(det_w, det_h)
 
-        # Samples: (rel_time, crop_x, is_scene_cut)
-        samples = []
-        prev_center_scaled_x = scaled_w // 2
+        prev_gray_thumb = None
+        duration = max(0.2, end_sec - start_sec)
+
+        # Tracking state
+        curr_camera_x = default_crop_x
+        last_known_face_x = default_crop_x
+        has_face_in_current_shot = False
+
+        # Timeline of smooth camera keyframes: [(t_rel, crop_x, is_cut)]
+        raw_timeline = []
 
         while True:
             pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
@@ -73,61 +114,68 @@ def analyze_scene_and_faces(
             if not ret:
                 break
 
-            h, w = frame.shape[:2]
-
-            # 1. Scene cut detection using downscaled 160x90 grayscale difference
-            thumb = cv2.resize(frame, (160, 90))
+            # 1. Scene cut detection (camera angle change)
+            thumb = cv2.resize(frame, (120, 68))
             gray_thumb = cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY)
             is_cut = False
 
             if prev_gray_thumb is not None:
                 diff = float(np.mean(np.abs(gray_thumb.astype(float) - prev_gray_thumb.astype(float))))
-                if diff > 30.0:  # Camera cut threshold
+                if diff > 27.0:  # Camera cut threshold
                     is_cut = True
+                    has_face_in_current_shot = False
 
             prev_gray_thumb = gray_thumb
 
-            # 2. Face detection
-            detect_frame = frame
-            downscale = 1.0
-            if h > 480:
-                downscale = 480.0 / h
-                detect_frame = cv2.resize(frame, (int(w * downscale), 480))
+            # 2. Deep Learning Face Detection (YuNet / Cascade)
+            det_frame = cv2.resize(frame, (det_w, det_h))
+            detected_scaled_center_x = None
 
-            gray = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2GRAY)
-            detected_x_orig = None
-
-            if classifier and not classifier.empty():
-                faces = classifier.detectMultiScale(
-                    gray,
-                    scaleFactor=1.18,
-                    minNeighbors=4,
-                    minSize=(int(gray.shape[0] * 0.12), int(gray.shape[0] * 0.12))
-                )
+            if det_type == "yunet" and detector is not None:
+                _, faces = detector.detect(det_frame)
+                if faces is not None and len(faces) > 0:
+                    # Pick largest face by bounding box area (w * h)
+                    largest = max(faces, key=lambda f: f[2] * f[3])
+                    fx, fy, fw, fh = largest[:4]
+                    # Center X in original video scale
+                    norm_center_x = (fx + fw / 2.0) / float(det_w)
+                    detected_scaled_center_x = int(round(norm_center_x * scaled_w))
+            elif det_type == "cascade" and detector is not None:
+                gray = cv2.cvtColor(det_frame, cv2.COLOR_BGR2GRAY)
+                faces = detector.detectMultiScale(gray, 1.15, 4, minSize=(int(det_h * 0.1), int(det_h * 0.1)))
                 if len(faces) > 0:
                     largest = max(faces, key=lambda f: f[2] * f[3])
                     fx, fy, fw, fh = largest
-                    detected_x_orig = int((fx + fw // 2) / downscale)
+                    norm_center_x = (fx + fw / 2.0) / float(det_w)
+                    detected_scaled_center_x = int(round(norm_center_x * scaled_w))
 
-            # 3. Map to scaled output coordinates
-            if detected_x_orig is not None:
-                target_scaled_x = int(round(detected_x_orig * scale_ratio))
-                if is_cut or prev_center_scaled_x is None:
-                    # Scene Cut: Immediate snap to new speaker, zero dragging
-                    curr_center_x = target_scaled_x
-                else:
-                    # Same shot: Smooth cinematic exponential moving average
-                    curr_center_x = int(0.3 * target_scaled_x + 0.7 * prev_center_scaled_x)
-                prev_center_scaled_x = curr_center_x
+            # 3. Target crop X calculation
+            if detected_scaled_center_x is not None:
+                target_crop_x = max(0, min(detected_scaled_center_x - out_w // 2, max_crop_x))
+                last_known_face_x = target_crop_x
+                has_face_in_current_shot = True
             else:
-                if is_cut:
-                    curr_center_x = scaled_w // 2
-                    prev_center_scaled_x = curr_center_x
+                # If face is temporarily lost (e.g. turned head), LOCK to last known face in this shot!
+                # NEVER drift to center unless it's a brand new scene cut with no face!
+                if is_cut and not has_face_in_current_shot:
+                    target_crop_x = default_crop_x
+                    last_known_face_x = default_crop_x
                 else:
-                    curr_center_x = prev_center_scaled_x if prev_center_scaled_x is not None else scaled_w // 2
+                    target_crop_x = last_known_face_x
 
-            crop_x = max(0, min(curr_center_x - out_w // 2, max_crop_x))
-            samples.append((round(rel_t, 2), crop_x, is_cut))
+            # 4. Cinematic Gimbal Movement Logic:
+            if is_cut or not raw_timeline:
+                # SCENE CUT: Snap immediately to new speaker! Zero drag across cuts
+                curr_camera_x = target_crop_x
+            else:
+                # WITHIN CONTINUOUS SHOT:
+                # Gimbal Deadzone: Micro-movements (< 35px) don't twitch the camera
+                dx = target_crop_x - curr_camera_x
+                if abs(dx) > 35:
+                    # Smooth exponential glide (cameraman easing)
+                    curr_camera_x = int(round(curr_camera_x + 0.22 * dx))
+
+            raw_timeline.append((round(rel_t, 2), curr_camera_x, is_cut))
 
             # Skip ahead
             for _ in range(sample_interval_frames - 1):
@@ -136,35 +184,55 @@ def analyze_scene_and_faces(
 
         cap.release()
 
-        if not samples:
+        if not raw_timeline:
             return ""
 
-        # If variance is very low, center is already good
-        all_x = [s[1] for s in samples]
-        if max(all_x) - min(all_x) < 45:
-            avg_x = int(np.mean(all_x))
-            return f"{avg_x}"
+        # Check total movement across clip
+        all_x = [s[1] for s in raw_timeline]
+        if max(all_x) - min(all_x) < 40:
+            return f"{int(np.mean(all_x))}"
 
-        # Group samples into piecewise timeline segments
-        segments = []
-        current_x = samples[0][1]
-        seg_start = 0.0
+        # 5. Build Smooth Linear-Interpolated FFmpeg Expression
+        # Filter down into keyframes at cuts and movement inflection points
+        keyframes = [(raw_timeline[0][0], raw_timeline[0][1])]
+        last_k_x = raw_timeline[0][1]
 
-        for i in range(1, len(samples)):
-            t, x, is_cut = samples[i]
-            if is_cut or abs(x - current_x) > 60 or (t - seg_start) > 3.0:
-                segments.append((t, current_x))
-                current_x = x
-                seg_start = t
+        for i in range(1, len(raw_timeline) - 1):
+            t, x, is_cut = raw_timeline[i]
+            prev_t, prev_x, _ = raw_timeline[i - 1]
+            next_t, next_x, _ = raw_timeline[i + 1]
 
-        segments.append((duration + 1.0, current_x))
+            if is_cut:
+                # Hard cut keyframe: finish previous shot, snap to new
+                keyframes.append((round(max(0, t - 0.04), 2), last_k_x))
+                keyframes.append((t, x))
+                last_k_x = x
+            elif abs(x - last_k_x) >= 45 or (t - keyframes[-1][0]) >= 2.0:
+                keyframes.append((t, x))
+                last_k_x = x
 
-        # Build clean nested if-expression for FFmpeg
-        expr = str(segments[-1][1])
-        for end_t, x_val in reversed(segments[:-1]):
-            expr = f"if(lt(t,{end_t:.2f}),{x_val},{expr})"
+        keyframes.append((round(duration + 0.5, 2), raw_timeline[-1][1]))
+
+        # Generate piecewise linear interpolation expression:
+        # For between(t, t1, t2): x1 + (x2 - x1) * (t - t1) / (t2 - t1)
+        expr = str(keyframes[-1][1])
+        for i in reversed(range(len(keyframes) - 1)):
+            t1, x1 = keyframes[i]
+            t2, x2 = keyframes[i + 1]
+            dt = max(0.01, t2 - t1)
+            dx = x2 - x1
+
+            if dt < 0.08 or abs(dx) < 2:
+                # Instant cut / static step
+                seg_expr = str(x1)
+            else:
+                # Smooth continuous linear glide
+                seg_expr = f"({x1}+{dx}*(t-{t1:.2f})/{dt:.2f})"
+
+            expr = f"if(lt(t,{t2:.2f}),{seg_expr},{expr})"
 
         return expr
+
     except Exception as e:
-        print(f"[FaceTracker] Analysis error: {e}")
+        print(f"[FaceTracker] Cinematic tracking error: {e}")
         return ""
