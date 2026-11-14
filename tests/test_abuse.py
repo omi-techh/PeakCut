@@ -92,6 +92,31 @@ print(server._ip(R("203.0.113.9", {"cf-connecting-ip": "1.2.3.4"})),
 """
 got = subprocess.run([sys.executable, "-c", probe], cwd=sys.argv[2], capture_output=True, text=True).stdout.split()
 check("a forged visitor header is ignored, the CDN's is used", got, ["203.0.113.9", "1.2.3.4", "198.51.100.7"])
+
+# ---- X-Forwarded-For: the proxy adds the real peer at the END, so the rightmost hop is the one to believe
+probe_xff = """
+import os
+os.environ["PEAKCUT_CLIENT_IP_HEADER"] = "CF-Connecting-IP"
+from studio import server
+from starlette.datastructures import Headers
+class R:
+    def __init__(s, peer, h): s.headers = Headers(h) if isinstance(h, dict) else Headers(raw=h); s.client = type("C", (), {"host": peer})()
+cases = [
+    ("1", "10.0.0.2", {"x-forwarded-for": "172.67.1.1, 198.51.100.7", "cf-connecting-ip": "1.2.3.4"}),
+    ("1", "10.0.0.2", [(b"x-forwarded-for", b"172.67.1.1"), (b"x-forwarded-for", b"198.51.100.7"), (b"cf-connecting-ip", b"1.2.3.4")]),
+    ("1", "10.0.0.2", {"x-forwarded-for": "9.9.9.9, 172.67.1.1", "cf-connecting-ip": "1.2.3.4"}),
+    ("1", "203.0.113.9", {"x-forwarded-for": "172.67.1.1", "cf-connecting-ip": "1.2.3.4"}),
+    ("0", "10.0.0.2", {"x-forwarded-for": "198.51.100.7"}),
+]
+out = []
+for trust, peer, h in cases:
+    os.environ["PEAKCUT_TRUST_PROXY"] = trust
+    out.append(server._ip(R(peer, h)))
+print(" ".join(out))
+"""
+got_xff = subprocess.run([sys.executable, "-c", probe_xff], cwd=sys.argv[2], capture_output=True, text=True).stdout.split()
+check("the rightmost forwarded hop is believed, a forged leftmost one is not", got_xff,
+      ["198.51.100.7", "198.51.100.7", "1.2.3.4", "203.0.113.9", "10.0.0.2"])
 check("redirects are never cached", fresh.get("/app", follow_redirects=False).headers.get("cache-control"), "private, no-store")
 check("a missing file is never cached", fresh.get("/brand/nope.png").headers.get("cache-control"), "private, no-store")
 

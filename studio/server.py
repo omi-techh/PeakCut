@@ -4,6 +4,7 @@ Public pages:  /  /login  /signup          The app:  /app  (signed-in users only
 Everything under /api, /media and /oauth needs a session, except /api/auth/* and /api/public."""
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -233,16 +234,47 @@ def _from_cdn(addr: str) -> bool:
     return any(ip in n for n in _CDN_RANGES)
 
 
+# Private and local addresses: the only places a reverse proxy in front of PeakCut can sit.
+_PROXY_RANGES = [ipaddress.ip_network(r) for r in (
+    "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+    "::1/128", "fc00::/7", "fe80::/10")]
+
+
+def _valid_ip(text: str) -> str:
+    """The address as text if it really is an IP address, otherwise ""."""
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return ""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return str(ip)
+
+
+def _from_proxy(addr: str) -> bool:
+    clean = _valid_ip(addr)
+    if not clean:
+        return False
+    ip = ipaddress.ip_address(clean)
+    return any(ip in n for n in _PROXY_RANGES)
+
+
 def _ip(request: Request) -> str:
     """The visitor's address, used for rate limits. The connection's own address, or the one the proxy in front
     reports (PEAKCUT_TRUST_PROXY). If that connection comes from the CDN, the CDN's header names the real visitor
     (PEAKCUT_CLIENT_IP_HEADER). The header is believed only when the CDN really sent the request, so nobody can
     pick their own address by sending it themselves."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    peer = (fwd.split(",")[0].strip() if fwd and config.env("PEAKCUT_TRUST_PROXY") else "") or (request.client.host if request.client else "")
+    direct = request.client.host if request.client else ""
+    peer = direct
+    fwd = ",".join(request.headers.getlist("x-forwarded-for"))
+    trust = (config.env("PEAKCUT_TRUST_PROXY") or "").strip().lower() not in ("", "0", "false", "no")
+    # The proxy adds the real peer at the end of X-Forwarded-For, so only the rightmost hop counts. Only a
+    # proxy on a private address is believed; a public connection sends its own forwarded header.
+    if trust and fwd and _from_proxy(direct):
+        peer = _valid_ip(fwd.rsplit(",", 1)[-1].strip()) or direct
     named = config.env("PEAKCUT_CLIENT_IP_HEADER")
     if named and request.headers.get(named) and _from_cdn(peer):
-        return request.headers[named].split(",")[0].strip()[:64]
+        return _valid_ip(request.headers[named].split(",")[0].strip()[:64]) or peer
     return peer
 
 
